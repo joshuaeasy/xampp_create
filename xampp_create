@@ -1,0 +1,234 @@
+#!/bin/bash
+
+TLD=".test"
+
+[[ $1 == "--ssl" ]]
+isSSL=$?
+isPark=1
+
+#sudo chmod -R a+w ${HOME}/PhpstormProjects
+
+printy() {
+  printf "\e[33;1m%s\n" "$1"
+}
+printg() {
+  printf "\e[32;1m%s\n" "$1"
+}
+printr() {
+  printf "\e[31;1m%s\n" "$1"
+}
+mkfile() {
+  echo "making dir $1 and file $2"
+  mkdir -p -- "$1" && echo > "$1"/"$2"
+}
+search_replace() {
+    sed -i '' "s|$1|$2|g" "$3"
+}
+enable_vhost() {
+  printy "enabling xampp vhost if not enable"
+  s="#Include etc/extra/httpd-vhosts.conf"
+  r="Include etc/extra/httpd-vhosts.conf"
+  search_replace "${s}" "${r}" /Applications/XAMPP/xamppfiles/etc/httpd.conf
+  printg "done enabling vhost"
+}
+
+park_dirs() {
+isPark=0
+dirs="${PWD}/*/"
+for dir in $dirs; do
+  echo "$dir"
+done
+
+read -p "Are you sure want to create vhosts for these folders? (Y/N)" confirm
+
+if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ] || [ "$confirm" = "yes" ] || [ "$confirm" = "YES" ]; then
+    mkfile "/Applications/XAMPP/xamppfiles/etc/extra/park" "$(basename -- "$PWD")-httpd-vhosts.conf"
+
+    for dir in $dirs; do
+      site="$(basename -- "$dir")"
+      create_vhost "$site" "$dir"
+      create_certificate "$site" "$dir"
+      show_helper_end "$site"
+      cd "$(dirname -- "$dir")" || exit
+    done
+
+    VHOSTSFILEPARENT="/Applications/XAMPP/xamppfiles/etc/extra/httpd-vhosts.conf"
+    VHOSTSFILE="/Applications/XAMPP/xamppfiles/etc/extra/park/$(basename -- "$PWD")-httpd-vhosts.conf"
+    search_replace "${VHOSTSFILE}" "" "${VHOSTSFILEPARENT}"
+    echo "Include ${VHOSTSFILE}" >> $VHOSTSFILEPARENT
+
+    restart_xampp
+fi
+
+}
+link_dir() {
+  dir=${PWD}
+  site="$(basename -- "$dir")"
+  create_vhost "$site" "$dir"
+  create_certificate "$site" "$dir"
+  restart_xampp
+  show_helper_end "$site"
+  cd "$dir" || exit
+}
+create_site() {
+  read -p "New local site name (prefix to ${TLD}): " site
+  if [ -z "$site" ]; then
+      printr "Site name not present."
+      printr "Please enter site name"
+      exit 99
+  fi
+
+  dir="${PWD}/${site}"
+
+  if [ ! -d "$dir" ]; then
+    mkdir -p "$dir"
+  fi
+
+  create_vhost "$site" "$dir"
+  create_certificate "$site" "$dir"
+  restart_xampp
+  show_helper_end "$site"
+}
+show_helper_end() {
+  printg "All done! visit, let's visit http://$1${TLD}/phpinfo.php"
+  if [ "$2" = "--ssl" ]; then
+      printg "or https://$1${TLD}/phpinfo.php"
+  fi
+}
+create_vhost() {
+  site=$1
+  dir=$2
+
+  if [ "$isPark" = 0 ]; then
+    printy "creating park vhosts for $site ($dir)"
+    else
+    printy "creating vhosts for $site ($dir)"
+  fi
+
+  #/etc/hosts
+  cp /etc/hosts /etc/hosts.original
+  echo -e "127.0.0.1\t${site}${TLD}" >> /etc/hosts
+  echo -e "127.0.0.1\twww.${site}${TLD}" >> /etc/hosts
+
+  #httpd-vhosts.conf
+  VHOSTSFILE="/Applications/XAMPP/xamppfiles/etc/extra/httpd-vhosts.conf"
+  cp $VHOSTSFILE ${VHOSTSFILE}.original
+
+  if [ "$isPark" = 0 ]; then
+    VHOSTSFILEPARENT="/Applications/XAMPP/xamppfiles/etc/extra/httpd-vhosts.conf"
+    VHOSTSFILE="/Applications/XAMPP/xamppfiles/etc/extra/park/$(basename -- "$PWD")-httpd-vhosts.conf"
+#    cp "$VHOSTSFILE" "${VHOSTSFILE}".original
+   fi
+
+  {
+     echo -e "# My Custom Host for '${site}${TLD}'"
+     echo "<VirtualHost *:80>"
+     echo -e "\tServerAdmin webmaster@${site}${TLD}"
+     echo -e "\tServerName ${site}${TLD}"
+     echo -e "\tServerAlias www.${site}${TLD}"
+     echo -e "\tDocumentRoot \"${dir}\""
+     echo -e "\t<Directory \"${dir}\">"
+     echo -e "\t\tOptions Indexes FollowSymLinks Includes execCGI"
+     echo -e "\t\tAllowOverride All"
+     echo -e "\t\tRequire all granted"
+     echo -e "\t</Directory>"
+     echo "</VirtualHost>"
+   } >> "$VHOSTSFILE"
+  
+
+  if [ $isSSL = 0 ]; then
+    {
+        echo -e "# My Custom SSL Host for '${site}${TLD}'"
+        echo "<VirtualHost *:443>"
+        echo -e "\tServerAdmin webmaster@${site}${TLD}"
+        echo -e "\tServerName ${site}${TLD}"
+        echo -e "\tServerAlias www.${site}${TLD}"
+        echo -e "\tDocumentRoot \"${dir}\""
+        echo -e "\tSSLEngine on"
+        echo -e "\tSSLCertificateFile \"/Applications/XAMPP/xamppfiles/etc/ssl/${site}${TLD}.crt\""
+        echo -e "\tSSLCertificateKeyFile \"/Applications/XAMPP/xamppfiles/etc/ssl/${site}${TLD}.key\""
+        echo -e "\t<Directory \"${dir}\">"
+        echo -e "\t\tOptions Indexes FollowSymLinks Includes execCGI"
+        echo -e "\t\tAllowOverride All"
+        echo -e "\t\tRequire all granted"
+        echo -e "\t</Directory>"
+        echo "</VirtualHost>"
+    } >> "$VHOSTSFILE"
+      
+  fi
+
+  echo -e "<?php\nphpinfo();" > "${dir}/phpinfo.php"
+
+  sudo chmod -R a+w "$dir"
+}
+create_certificate() {
+  if [ $isSSL = 0 ]; then
+    local site=$1
+    printy "creating certificate for $site"
+    printy 'generating certificate...'
+    cd /Applications/XAMPP/xamppfiles/etc/ || exit
+
+    if [ ! -d "ssl" ]; then
+        mkdir ssl
+    fi
+
+    cd ssl || exit
+
+    #Required
+    domain="${site}${TLD}"
+    commonname=$domain
+
+    #Change to your company details
+    country=NG
+    state=Oyo
+    locality=Ibadan
+    organization=masterjosh.com
+    organizationalunit=IT
+    email=hire@masterjosh.com
+
+    if sudo security verify-cert -c ./"$domain".crt > /dev/null 2>&1; then
+        printy "removing certificate to trust store ..."
+#        sudo security delete-certificate -c "$commonname" /System/Library/Keychains/SystemRootCertificates.keychain
+        sudo security remove-trusted-cert -d ./"$domain".crt
+    fi
+
+    #Create the request
+    printy "Creating CSR"
+    openssl req -new -newkey rsa:2048 -nodes -keyout "$domain".key -out "$domain".csr \
+        -subj "/C=$country/ST=$state/L=$locality/O=$organization/OU=$organizationalunit/CN=$commonname/emailAddress=$email"
+
+    echo -e "authorityKeyIdentifier=keyid,issuer\nbasicConstraints=CA:FALSE\nkeyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment\nsubjectAltName = @alt_names\n[alt_names]\nDNS.1 = $domain" > "$domain".ext
+
+    openssl x509 -req -sha256 -extfile "$domain".ext -days 3650 -in "$domain".csr -signkey "$domain".key -out "$domain".crt
+
+    printy 'import certificate to system keychain'
+    sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ./"$domain".crt
+
+#    cd "$(dirname -- "$dir")" || exit
+  fi
+}
+restart_xampp() {
+  printg 'restarting xampp'
+  #restart apache
+  #sudo apachectl stop
+  sudo /Applications/XAMPP/xamppfiles/xampp restart
+}
+
+enable_vhost
+
+case $1 in
+"park")
+[[ $2 == "--ssl" ]]
+isSSL=$?
+park_dirs
+  ;;
+"link")
+[[ $2 == "--ssl" ]]
+isSSL=$?
+link_dir
+  ;;
+*)
+  create_site
+  ;;
+esac
+
